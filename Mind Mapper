@@ -1,0 +1,435 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactFlow, {
+  Background,
+  MiniMap,
+  Controls,
+  addEdge,
+  useNodesState,
+  useEdgesState,
+  MarkerType,
+} from "reactflow";
+import "reactflow/dist/style.css";
+import { toPng } from "html-to-image";
+import { motion, AnimatePresence } from "framer-motion";
+
+// ---- Utility helpers ----
+const LS_KEY = "dynamic-mindmap-v1";
+
+function uid(prefix = "n") {
+  return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function download(filename, text) {
+  const element = document.createElement("a");
+  element.setAttribute(
+    "href",
+    `data:text/plain;charset=utf-8,${encodeURIComponent(text)}`
+  );
+  element.setAttribute("download", filename);
+  element.style.display = "none";
+  document.body.appendChild(element);
+  element.click();
+  document.body.removeChild(element);
+}
+
+export default function DynamicMindMapper() {
+  // ---- initial content ----
+  const initialNodes = useMemo(
+    () => [
+      {
+        id: "root",
+        position: { x: 250, y: 80 },
+        data: { label: "My Big Idea", color: "#1e293b" },
+        style: nodeStyle("#1e293b"),
+        draggable: true,
+      },
+      {
+        id: "a",
+        position: { x: 50, y: 260 },
+        data: { label: "Research", color: "#0f766e" },
+        style: nodeStyle("#0f766e"),
+      },
+      {
+        id: "b",
+        position: { x: 450, y: 260 },
+        data: { label: "Execution", color: "#7c3aed" },
+        style: nodeStyle("#7c3aed"),
+      },
+    ],
+    []
+  );
+
+  const initialEdges = useMemo(
+    () => [
+      {
+        id: "e-root-a",
+        source: "root",
+        target: "a",
+        animated: true,
+        type: "smoothstep",
+        markerEnd: { type: MarkerType.ArrowClosed },
+      },
+      {
+        id: "e-root-b",
+        source: "root",
+        target: "b",
+        animated: true,
+        type: "smoothstep",
+        markerEnd: { type: MarkerType.ArrowClosed },
+      },
+    ],
+    []
+  );
+
+  // ---- state ----
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [selectedId, setSelectedId] = useState(null);
+  const [connectMode, setConnectMode] = useState(false);
+  const [search, setSearch] = useState("");
+  const [showHelp, setShowHelp] = useState(false);
+  const [editNodeId, setEditNodeId] = useState(null);
+  const [colorPickerFor, setColorPickerFor] = useState(null);
+
+  const flowRef = useRef(null);
+
+  // ---- persistence ----
+  useEffect(() => {
+    const saved = localStorage.getItem(LS_KEY);
+    if (saved) {
+      try {
+        const { nodes: n, edges: e } = JSON.parse(saved);
+        if (Array.isArray(n) && Array.isArray(e)) {
+          setNodes(n);
+          setEdges(e);
+        }
+      } catch {}
+    }
+  }, [setNodes, setEdges]);
+
+  useEffect(() => {
+    const payload = JSON.stringify({ nodes, edges });
+    localStorage.setItem(LS_KEY, payload);
+  }, [nodes, edges]);
+
+  // ---- callbacks ----
+  const onConnect = useCallback(
+    (params) => setEdges((eds) => addEdge({ ...params, type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed } }, eds)),
+    [setEdges]
+  );
+
+  const onNodeClick = useCallback((_, node) => setSelectedId(node.id), []);
+
+  const onPaneClick = useCallback(() => setSelectedId(null), []);
+
+  const addRoot = () => {
+    const id = uid();
+    const color = randomColor();
+    setNodes((nds) => [
+      ...nds,
+      {
+        id,
+        position: { x: 120 + Math.random() * 400, y: 80 },
+        data: { label: "New Topic", color },
+        style: nodeStyle(color),
+      },
+    ]);
+  };
+
+  const addChild = () => {
+    const parentId = selectedId || nodes[0]?.id;
+    if (!parentId) return;
+    const id = uid();
+    const color = randomColor();
+    const parent = nodes.find((n) => n.id === parentId);
+    const pos = parent ? { x: parent.position.x + 220, y: parent.position.y + 80 } : { x: 200, y: 200 };
+    setNodes((nds) => [
+      ...nds,
+      { id, position: pos, data: { label: "New Idea", color }, style: nodeStyle(color) },
+    ]);
+    setEdges((eds) => [
+      ...eds,
+      { id: uid("e"), source: parentId, target: id, type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed } },
+    ]);
+  };
+
+  const removeSelected = () => {
+    if (!selectedId) return;
+    setEdges((eds) => eds.filter((e) => e.source !== selectedId && e.target !== selectedId));
+    setNodes((nds) => nds.filter((n) => n.id !== selectedId));
+    setSelectedId(null);
+  };
+
+  const clearAll = () => {
+    setNodes([]);
+    setEdges([]);
+    setSelectedId(null);
+  };
+
+  const handleExportJSON = () => {
+    download("mindmap.json", JSON.stringify({ nodes, edges }, null, 2));
+  };
+
+  const handleExportPNG = async () => {
+    if (!flowRef.current) return;
+    const el = flowRef.current.querySelector(".react-flow");
+    if (!el) return;
+    const dataUrl = await toPng(el, { pixelRatio: 2, cacheBust: true, backgroundColor: "#0b1220" });
+    const link = document.createElement("a");
+    link.download = "mindmap.png";
+    link.href = dataUrl;
+    link.click();
+  };
+
+  const handleImport = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const obj = JSON.parse(e.target.result);
+        if (Array.isArray(obj.nodes) && Array.isArray(obj.edges)) {
+          setNodes(obj.nodes);
+          setEdges(obj.edges);
+        }
+      } catch {}
+    };
+    reader.readAsText(file);
+  };
+
+  const onKeyDown = useCallback(
+    (e) => {
+      if (e.key === "Delete" || (e.key === "Backspace" && (e.metaKey || e.ctrlKey))) {
+        removeSelected();
+      } else if (e.key.toLowerCase() === "s" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        handleExportJSON();
+      } else if (e.key.toLowerCase() === "f" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        const el = document.getElementById("search-input");
+        el?.focus();
+      }
+    },
+    [removeSelected]
+  );
+
+  useEffect(() => {
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onKeyDown]);
+
+  const onNodeDoubleClick = (_e, node) => {
+    setEditNodeId(node.id);
+  };
+
+  const updateNodeLabel = (id, label) => {
+    setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, label } } : n)));
+  };
+
+  const updateNodeColor = (id, color) => {
+    setNodes((nds) =>
+      nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, color }, style: nodeStyle(color) } : n))
+    );
+  };
+
+  const highlighted = useMemo(() => new Set(nodes.filter((n) => n.data?.label?.toLowerCase().includes(search.toLowerCase())).map((n) => n.id)), [nodes, search]);
+
+  return (
+    <div className="w-full h-[90vh] bg-slate-900 text-slate-100 p-3">
+      <div className="max-w-6xl mx-auto h-full flex flex-col gap-3">
+        {/* Top Bar */}
+        <div className="flex items-center gap-2 justify-between bg-slate-800/70 rounded-2xl p-2 shadow">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold tracking-wide text-lg px-3 py-1 rounded-xl bg-slate-700">Dynamic Mind Mapper</span>
+            <AnimatePresence>
+              {selectedId && (
+                <motion.span initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} className="text-xs bg-slate-700/70 px-2 py-1 rounded-md">Selected: {selectedId}</motion.span>
+              )}
+            </AnimatePresence>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={addRoot} className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600 active:scale-[.98]">+ Topic</button>
+            <button onClick={addChild} className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600">+ Child</button>
+            <button onClick={() => setConnectMode((s) => !s)} className={`px-3 py-1.5 rounded-xl ${connectMode ? "bg-emerald-700" : "bg-slate-700 hover:bg-slate-600"}`}>{connectMode ? "Connect: ON" : "Connect"}</button>
+            <button onClick={removeSelected} className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600">Delete</button>
+            <button onClick={() => setShowHelp((s) => !s)} className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600">Help</button>
+          </div>
+          <div className="flex items-center gap-2">
+            <input id="search-input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search nodes (⌘/Ctrl+F)" className="px-3 py-1.5 rounded-xl bg-slate-700/70 outline-none w-48" />
+            <button onClick={handleExportJSON} className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600">Export JSON</button>
+            <label className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600 cursor-pointer">
+              Import
+              <input type="file" accept="application/json" className="hidden" onChange={(e) => e.target.files?.[0] && handleImport(e.target.files[0])} />
+            </label>
+            <button onClick={handleExportPNG} className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600">Export PNG</button>
+            <button onClick={clearAll} className="px-3 py-1.5 rounded-xl bg-rose-700 hover:bg-rose-600">Reset</button>
+          </div>
+        </div>
+
+        {/* Canvas */}
+        <div ref={flowRef} className="flex-1 rounded-2xl overflow-hidden border border-slate-700/60 shadow-xl">
+          <ReactFlow
+            nodes={nodes.map((n) => ({
+              ...n,
+              style: nodeStyle(n.data?.color, highlighted.has(n.id), n.id === selectedId),
+            }))}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={onNodeClick}
+            onPaneClick={onPaneClick}
+            onNodeDoubleClick={onNodeDoubleClick}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+            connectionMode={connectMode ? "loose" : "strict"}
+          >
+            <MiniMap pannable zoomable />
+            <Controls />
+            <Background variant="dots" gap={16} size={1} />
+          </ReactFlow>
+        </div>
+
+        {/* Inspector */}
+        <AnimatePresence>
+          {selectedId && (
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="bg-slate-800/80 rounded-2xl p-3 grid md:grid-cols-3 gap-3">
+              <NodeInspector
+                node={nodes.find((n) => n.id === selectedId)}
+                onChangeLabel={(v) => updateNodeLabel(selectedId, v)}
+                onChangeColor={(v) => updateNodeColor(selectedId, v)}
+                onColorPickerOpen={() => setColorPickerFor(selectedId)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Help Drawer */}
+        <AnimatePresence>
+          {showHelp && (
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="bg-slate-800/90 rounded-2xl p-4 text-sm leading-relaxed">
+              <p className="mb-2 font-semibold">Tips</p>
+              <ul className="list-disc ml-6 space-y-2 text-slate-200/90">
+                <li>Double‑click a node to rename. Use the color swatch to recolor.</li>
+                <li>Select a node → <span className="px-2 py-0.5 bg-slate-700 rounded">+ Child</span> to branch ideas.</li>
+                <li>Toggle <span className="px-2 py-0.5 bg-slate-700 rounded">Connect</span> to draw relationships.</li>
+                <li>Delete key removes the selected node (and its links).</li>
+                <li>⌘/Ctrl+F focuses search. ⌘/Ctrl+S exports JSON.</li>
+                <li>Use Export PNG for quick sharing; JSON for versioning.</li>
+              </ul>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Floating color picker */}
+      <AnimatePresence>
+        {colorPickerFor && (
+          <ColorPicker
+            key={colorPickerFor}
+            color={nodes.find((n) => n.id === colorPickerFor)?.data?.color || "#334155"}
+            onClose={() => setColorPickerFor(null)}
+            onPick={(c) => {
+              updateNodeColor(colorPickerFor, c);
+              setColorPickerFor(null);
+            }}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ---- Components ----
+function NodeInspector({ node, onChangeLabel, onChangeColor, onColorPickerOpen }) {
+  if (!node) return null;
+  return (
+    <div className="col-span-3 md:col-span-1 flex items-center gap-3">
+      <button onClick={onColorPickerOpen} title="Pick color" className="w-8 h-8 rounded-full border border-white/20" style={{ background: node.data?.color }} />
+      <input
+        className="flex-1 px-3 py-2 rounded-xl bg-slate-700/70 outline-none"
+        value={node.data?.label || ""}
+        onChange={(e) => onChangeLabel(e.target.value)}
+        placeholder="Node title"
+      />
+      <input
+        type="color"
+        className="w-10 h-10 rounded-xl bg-transparent"
+        title="Quick color"
+        value={node.data?.color || "#334155"}
+        onChange={(e) => onChangeColor(e.target.value)}
+      />
+    </div>
+  );
+}
+
+function ColorPicker({ color, onPick, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const onEsc = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onEsc);
+    return () => window.removeEventListener("keydown", onEsc);
+  }, [onClose]);
+
+  const palette = [
+    "#0ea5e9",
+    "#22c55e",
+    "#eab308",
+    "#ef4444",
+    "#a855f7",
+    "#14b8a6",
+    "#f97316",
+    "#64748b",
+    "#1f2937",
+  ];
+
+  return (
+    <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }} className="fixed inset-0 z-50 grid place-items-center bg-black/40">
+      <div ref={ref} className="bg-slate-800 rounded-2xl p-4 shadow-xl w-[320px]">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm opacity-80">Node color</span>
+          <button onClick={onClose} className="px-2 py-1 rounded-lg bg-slate-700">Close</button>
+        </div>
+        <div className="grid grid-cols-5 gap-2 mb-3">
+          {palette.map((c) => (
+            <button key={c} onClick={() => onPick(c)} className="aspect-square rounded-xl border border-white/10" style={{ background: c }} />
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <input type="color" value={color} onChange={(e) => onPick(e.target.value)} className="w-12 h-10 rounded" />
+          <span className="text-xs opacity-80">Pick any color</span>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ---- styles & theming ----
+function nodeStyle(color = "#334155", highlight = false, selected = false) {
+  return {
+    padding: 12,
+    borderRadius: 16,
+    border: `2px solid ${selected ? "#ffffff" : "#0f172a"}`,
+    background: `linear-gradient(180deg, ${hexWithAlpha(color, 0.9)}, ${hexWithAlpha(color, 0.7)})`,
+    color: "#fff",
+    boxShadow: `${highlight ? "0 0 0 4px rgba(250,204,21,0.35)," : ""} 0 8px 30px rgba(0,0,0,0.35)`,
+    fontWeight: 600,
+    letterSpacing: 0.2,
+  };
+}
+
+function hexWithAlpha(hex, alpha = 1) {
+  try {
+    const p = hex.replace("#", "");
+    const bigint = parseInt(p, 16);
+    const r = (bigint >> 16) & 255;
+    const g = (bigint >> 8) & 255;
+    const b = bigint & 255;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  } catch {
+    return "rgba(51,65,85,1)";
+  }
+}
+
+function randomColor() {
+  const palette = ["#0ea5e9", "#22c55e", "#eab308", "#ef4444", "#a855f7", "#14b8a6", "#f97316", "#64748b", "#1f2937"]; 
+  return palette[Math.floor(Math.random() * palette.length)];
+}
